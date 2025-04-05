@@ -1,0 +1,34 @@
+# Compiled object files
+*.o
+*.obj
+
+# Compiled dynamic libraries
+*.so
+*.dll
+*.dylib
+
+# CUDA binaries
+*.out
+*.exe
+
+# Logs and temporary files
+*.log
+*.tmp
+*.swp
+
+# Build directories
+/build/
+/dist/
+
+# IDE specific files
+.vscode/
+.idea/
+*.code-workspace
+
+# VSCode debugging files
+launch.json
+tasks.json
+
+# System files
+.DS_Store
+Thumbs.db
