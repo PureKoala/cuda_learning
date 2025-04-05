@@ -18,6 +18,7 @@
 
 # Build directories
 /build/
+**/build/
 /dist/
 
 # IDE specific files

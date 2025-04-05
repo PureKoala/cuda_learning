@@ -1,10 +1,18 @@
+#include "params.h"
 #include <stdio.h>
 #include <cuda_runtime.h>
 
 #define CEIL_DIV(x,y) ((x + y - 1) / y)
-// #define ENABLE_CPU_GEMM
+#define ENABLE_CPU_GEMM
 
-// Simple CUDA kernel
+/*
+    V0 using global memory to perform SGEMM:
+    -> Need to read a row of A and a col of B for each thread
+
+    -> Read  Count: M * K * N + N * K * M = 2MNK
+    -> Write Count: M * N
+*/
+
 __global__ void sgemm_kernel(
     const float *A,
     const float *B,
@@ -40,9 +48,9 @@ void cpu_gemm(const float *A, const float *B, float *C, int M, int N, int K) {
 }
 
 int main() {
-    int M = 2048;
-    int N = 2048;
-    int K = 2048;
+    // int M = 2048;
+    // int N = 2048;
+    // int K = 2048;
 
     const size_t sizeA = M * K * sizeof(float);
     const size_t sizeB = K * N * sizeof(float);
@@ -61,12 +69,16 @@ int main() {
     }
 
     // Initialize matrices A and B
-    int randMax = 1000;
+    srand(time(NULL));
+    
+    // Initialize A with random values between -1 and 1
     for (int i = 0; i < M * K; i++) {
-        A[i] = static_cast<float>(i % randMax);
+        A[i] = 2.0f * rand() / RAND_MAX - 1.0f;
     }
+    
+    // Initialize B with random values between -1 and 1
     for (int i = 0; i < K * N; i++) {
-        B[i] = static_cast<float>(i % randMax);
+        B[i] = 2.0f * rand() / RAND_MAX - 1.0f;
     }
 
     // Allocate memory on the device
@@ -84,9 +96,9 @@ int main() {
     cudaMemcpy(d_B, B, sizeB, cudaMemcpyHostToDevice);
 
     // Configure grid and block dimensions
-    const int blockSize = 32;
-    dim3 blockDim(blockSize, blockSize);
-    dim3 gridDim(CEIL_DIV(M, blockSize), CEIL_DIV(N, blockSize));
+    // const int blockSize = 32;
+    dim3 blockDim(BLOCK_SIZE, BLOCK_SIZE);
+    dim3 gridDim(CEIL_DIV(M, BLOCK_SIZE), CEIL_DIV(N, BLOCK_SIZE));
 
     // Launch the kernel
     cudaEvent_t start, stop;
@@ -123,10 +135,16 @@ int main() {
 
     double cpu_time = double(end_cpu - start_cpu) / CLOCKS_PER_SEC;
     printf("Time taken for CPU's SGEMM: %f seconds\n", cpu_time);
+    
+    // Calculate CPU throughput in GFLOPS
+    // double operations = 2.0 * M * N * K;  // Multiply-add operations
+    double cpu_throughput = operations / cpu_time / 1e9;
+    printf("CPU Throughput: %.2f GFLOPS\n", cpu_throughput);
+
 
     // Verify the result
     for (int i = 0; i < M * N; i++) {
-        if (fabs(C_cpu[i] - C_gpu[i]) > 1e-5) {
+        if (fabs(C_cpu[i] - C_gpu[i]) > 1e-3) {
             fprintf(stderr, "Mismatch at index %d: CPU = %f, GPU = %f\n", i, C_cpu[i], C_gpu[i]);
             break;
         }
