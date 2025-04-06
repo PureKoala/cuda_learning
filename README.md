@@ -3,9 +3,8 @@
 ## Test results
 
 ### SGEMM Performance Results
-
 | Program Type | Throughput (GFLOPS) | Throughput Percentage (%) | Execution Time (ms) |
-|--------------|---------------------|----------------|---------------------|
+|:------------:|:-------------------:|:-------------------------:|:-------------------:|
 | cuBlas Ref | 18848.16 | 100.00 | 7.291904 |
 | GMEM | 289.02 | 1.53 | 475.536743 |
 | GMEM Coalesce | 3046.64 | 16.16 | 45.111713 |
