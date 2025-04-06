@@ -13,14 +13,14 @@
 #define CEIL_DIV(x,y) ((x + y - 1) / y)
 
 /*
-    V6 impove BLOCK_SIZE and more Tile to perform SGEMM:
+    V7 combines vectorized memory access with register usage:
     -> Outer loop tile A to blocks of size BM * K
     -> Outer loop tile B to blocks of size K * BN
     -> Inner loop tile A to blocks of size BM * BN
     -> Each thread block computes a matrix of C of size TM * TN
     -> Using vectorized loads and stores to improve memory access patterns
+    -> Using registers to store intermediate values from shared memory
 
-    // TODO: recompute
     -> Read  Count: bm * K * (N / bn) * (M / bm) + K * bn * (M / bm) * (N / bn) = KMN*(1/bm + 1/bn)
     -> Write Count: bm * bn * (M / bm) * (N / bn) = MN
 */
@@ -33,9 +33,6 @@ __global__ void sgemm_kernel(
     const int N,
     const int K
 ) {
-    // int bm = blockDim.x; // Block size for A
-    // int bn = blockDim.y; // Block size for B
-
     // Calculate the row and column index of the element to be computed
     uint tx = threadIdx.x;
     uint bx = blockIdx.x;
@@ -60,9 +57,13 @@ __global__ void sgemm_kernel(
     
     float threadRes[TM * TN] = {0.0f};
 
+    // Register arrays for caching shared memory data
+    float A_reg[TM];
+    float B_reg[TN];
+
     for(int bkIdx = 0; bkIdx < K; bkIdx += BK) {
 
-        // Load A and B into shared memory
+        // Load A and B into shared memory with vectorized access
         float4 tmp = reinterpret_cast<const float4*>(
             &A_ptr[innerRowA * K + innerColA * 4]
         )[0];
@@ -77,18 +78,24 @@ __global__ void sgemm_kernel(
                 &B_ptr[innerRowB * N + innerColB * 4]
             )[0];
 
-
         __syncthreads();
 
         A_ptr += BK;
         B_ptr += BK * N;
 
         for(int dotIdx = 0; dotIdx < BK; dotIdx++) {
+            // Load shared memory data into registers first
+            for(int i = 0; i < TM; i++) {
+                A_reg[i] = As[dotIdx * BM + threadRow * TM + i];
+            }
+            for(int i = 0; i < TN; i++) {
+                B_reg[i] = Bs[dotIdx * BN + threadCol * TN + i];
+            }
+
+            // Compute using register values
             for(int resIdxN = 0; resIdxN < TN; resIdxN++) {
                 for(int resIdxM = 0; resIdxM < TM; resIdxM++) {
-                    threadRes[resIdxM * TN + resIdxN] += 
-                        As[dotIdx * BM + threadRow * TM + resIdxM] * 
-                            Bs[dotIdx * BN + threadCol * TN + resIdxN];
+                    threadRes[resIdxM * TN + resIdxN] += A_reg[resIdxM] * B_reg[resIdxN];
                 }
             }
         }
@@ -96,8 +103,7 @@ __global__ void sgemm_kernel(
         __syncthreads();
     }
 
-
-    // Write the result to global memory
+    // Write the result to global memory using vectorized stores
     for(int resIdxM = 0; resIdxM < TM; resIdxM++) {
         for(int resIdxN = 0; resIdxN < TN; resIdxN += 4) {
             reinterpret_cast<float4*>(
@@ -108,7 +114,6 @@ __global__ void sgemm_kernel(
                 )[0];
         }
     }
-
 }
 
 #ifdef ENABLE_CPU_GEMM
@@ -125,10 +130,6 @@ void cpu_gemm(const float *A, const float *B, float *C, int M, int N, int K) {
 #endif
 
 int main() {
-    // int M = 2048;
-    // int N = 2048;
-    // int K = 2048;
-
     const size_t sizeA = M * K * sizeof(float);
     const size_t sizeB = K * N * sizeof(float);
     const size_t sizeC = M * N * sizeof(float);
@@ -247,5 +248,4 @@ int main() {
     }
 
     return 0;
-
 }

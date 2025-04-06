@@ -12,9 +12,9 @@
 | 1D BlockTiling (BM=BN=64) | 9955.72 | 52.82 | 13.805024 |
 | 2D BlockTiling (BM=BN=128) | 11079.56 | 58.78 | 12.404736 |
 | 2D BlockTiling + Regfile (BM=BN=128) | 11047.64 | 58.61 | 12.440576 |
-| Transpose & Vectorization | 15043.46 | 79.81 | 9.136128 |
-
-
+| Transpose & Vectorization | 15466.43 | 82.06 | 8.886272 |
+| Transpose & Vectorization + Regfile | 15360.23 | 81.49 | 8.947712 |
+| WarpTiling (bugs?) | 12648.92 | 67.11 | 10.865664 |
 
 #### Configures
 - Matrix dimensions: M = N = K = 4096
