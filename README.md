@@ -12,8 +12,8 @@
 | SMEM | 5364.99 | 25.617760 |
 | 1D BlockTiling (BM=BN=64) | 9955.72 | 13.805024 |
 | 2D BlockTiling (BM=BN=128) | 11079.56 | 12.404736 |
+| 2D BlockTiling + Regfile (BM=BN=128) | 11047.64 | 12.440576 |
 
-
-## Notes
+#### Configures
 - Matrix dimensions: M = N = K = 4096
 - BLOCK_SIZR: 32
