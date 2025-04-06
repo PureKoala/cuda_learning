@@ -1,6 +1,8 @@
 #ifndef PARAMS_H
 #define PARAMS_H
 
+// #define ENABLE_CPU_GEMM
+
 // Global matrix dimension parameters for SGEMM (Single-precision General Matrix Multiply)
 // For operation C = A * B
 // A is an M x K matrix
@@ -14,9 +16,10 @@ const int N = 4096; // Number of columns in matrices B and C
 // Block size for tiling
 const int BLOCK_SIZE = 32; // Size of the square blocks used in the tiled matrix multiplication
 
-const int BM = 64;
-const int BN = 64;
+const int BM = 128;
+const int BN = 128;
 const int BK = 8;
 const int TM = 8;
+const int TN = 8;
 
 #endif // PARAMS_H

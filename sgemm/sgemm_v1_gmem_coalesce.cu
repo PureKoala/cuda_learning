@@ -109,8 +109,10 @@ int main() {
     cudaEventCreate(&start);
     cudaEventCreate(&stop);
 
-    cudaEventRecord(start);
-    sgemm_kernel<<<gridDim, blockDim>>>(d_A, d_B, d_C, M, N, K);
+    for(int r = 1; r < 5; r++) {
+        cudaEventRecord(start);
+        sgemm_kernel<<<gridDim, blockDim>>>(d_A, d_B, d_C, M, N, K);
+    }
     cudaEventRecord(stop);
     cudaEventSynchronize(stop);
 

@@ -11,7 +11,6 @@
 }
 
 #define CEIL_DIV(x,y) ((x + y - 1) / y)
-// #define ENABLE_CPU_GEMM
 
 /*
     V3 impove BLOCK_SIZE and more Tile to perform SGEMM:
@@ -160,9 +159,10 @@ int main() {
     cudaEvent_t start, stop;
     cudaEventCreate(&start);
     cudaEventCreate(&stop);
-
-    cudaEventRecord(start);
-    sgemm_kernel<<<gridDim, blockDim, sharedMemSize>>>(d_A, d_B, d_C, M, N, K);
+    for(int r = 1; r < 5; r++) {
+        cudaEventRecord(start);
+        sgemm_kernel<<<gridDim, blockDim, sharedMemSize>>>(d_A, d_B, d_C, M, N, K);
+    }
     cudaEventRecord(stop);
     cudaEventSynchronize(stop);
 

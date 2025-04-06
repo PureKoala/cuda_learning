@@ -11,14 +11,15 @@
 }
 
 #define CEIL_DIV(x,y) ((x + y - 1) / y)
-// #define ENABLE_CPU_GEMM
 
 /*
-    V2 using shared memory to perform SGEMM:
-    -> Spilt A to blocks of size bm * K
-    -> Spilt B to blocks of size K * bn
-    -> Each thread block computes a block of C of size bm * bn
+    V4 impove BLOCK_SIZE and more Tile to perform SGEMM:
+    -> Outer loop tile A to blocks of size BM * K
+    -> Outer loop tile B to blocks of size K * BN
+    -> Inner loop tile A to blocks of size BM * BN
+    -> Each thread block computes a matrix of C of size TM * TN
 
+    // TODO: recompute
     -> Read  Count: bm * K * (N / bn) * (M / bm) + K * bn * (M / bm) * (N / bn) = KMN*(1/bm + 1/bn)
     -> Write Count: bm * bn * (M / bm) * (N / bn) = MN
 */
@@ -35,41 +36,72 @@ __global__ void sgemm_kernel(
     // int bn = blockDim.y; // Block size for B
 
     // Calculate the row and column index of the element to be computed
-    int tx = threadIdx.x;
-    int bx = blockIdx.x;
-    int by = blockIdx.y;
+    uint tx = threadIdx.x;
+    uint bx = blockIdx.x;
+    uint by = blockIdx.y;
 
-    int threadRow = tx / BLOCK_SIZE;
-    int threadCol = tx % BLOCK_SIZE;
+    uint threadRow = tx / (BN / TN);
+    uint threadCol = tx % (BN / TN);
 
-    float* A_ptr = (float*)A + BLOCK_SIZE * bx * K;
-    float* B_ptr = (float*)B + BLOCK_SIZE * by;
-    float* C_ptr = (float*)C + BLOCK_SIZE * bx * N + BLOCK_SIZE * by;
+    uint innerRowA = tx / BK;
+    uint innerColA = tx % BK;
+    uint innerRowB = tx / BN;
+    uint innerColB = tx % BN;
+
+    uint totalResBlockTile = BM * BN;
+    uint numResBlockTile = totalResBlockTile / (TM * TN);
+    uint strideA = numResBlockTile / BK;
+    uint strideB = numResBlockTile / BN;
+
+    float* A_ptr = (float*)A + BM * bx * K;
+    float* B_ptr = (float*)B + BN * by;
+    float* C_ptr = (float*)C + BM * bx * N + BN * by;
 
     // read a block of A and B to shared memory
     extern __shared__ float shared_mem[];
     float* As = shared_mem;
-    float* Bs = &shared_mem[BLOCK_SIZE * BLOCK_SIZE];
+    float* Bs = &shared_mem[BM * BK];
     
-    float tmp = 0.0f;
-    for(int bkIdx = 0; bkIdx < K; bkIdx += BLOCK_SIZE) {
+    float threadRes[TM * TN] = {0.0f};
+
+    for(int bkIdx = 0; bkIdx < K; bkIdx += BK) {
+
         // Load A and B into shared memory
-        As[threadRow * BLOCK_SIZE + threadCol] = A_ptr[threadRow * K + threadCol];
-        Bs[threadRow * BLOCK_SIZE + threadCol] = B_ptr[threadRow * N + threadCol];
+        for(int loadOff = 0; loadOff < BM; loadOff += strideA) {
+            As[(innerRowA + loadOff) * BK + innerColA] = 
+                A_ptr[(innerRowA + loadOff) * K + innerColA];
+        }
+        for(int loadOff = 0; loadOff < BK; loadOff += strideB) {
+            Bs[(innerRowB + loadOff) * BN + innerColB] =
+                B_ptr[(innerRowB + loadOff) * N + innerColB];
+        }
+
         __syncthreads();
 
-        A_ptr += BLOCK_SIZE;
-        B_ptr += BLOCK_SIZE * N;
+        A_ptr += BK;
+        B_ptr += BK * N;
 
-        for(int dotIdx = 0; dotIdx < BLOCK_SIZE; dotIdx++) {
-            tmp += As[threadRow * BLOCK_SIZE + dotIdx] * Bs[dotIdx * BLOCK_SIZE + threadCol];
+        for(int dotIdx = 0; dotIdx < BK; dotIdx++) {
+            for(int resIdxN = 0; resIdxN < TN; resIdxN++) {
+                for(int resIdxM = 0; resIdxM < TM; resIdxM++) {
+                    threadRes[resIdxM * TN + resIdxN] += 
+                        As[(threadRow * TM + resIdxM) * BK + dotIdx] * 
+                            Bs[dotIdx * BN + threadCol * TN + resIdxN];
+                }
+            }
         }
+        
         __syncthreads();
     }
 
 
     // Write the result to global memory
-    C_ptr[threadRow * N + threadCol] = tmp;
+    for(int resIdxM = 0; resIdxM < TM; resIdxM++) {
+        for(int resIdxN = 0; resIdxN < TN; resIdxN++) {
+            C_ptr[(threadRow * TM + resIdxM) * N + threadCol * TN + resIdxN] = 
+                threadRes[resIdxM * TN + resIdxN];
+        }
+    }
 
 }
 
@@ -108,16 +140,17 @@ int main() {
     }
 
     // Initialize matrices A and B
-    int randMax = 1000;
-    // Seed the random number generator
+    // Seed the random number generator with current time
     srand(time(NULL));
     
-    // Initialize matrices A and B with random values
+    // Initialize A with random values between -1 and 1
     for (int i = 0; i < M * K; i++) {
-        A[i] = static_cast<float>(rand() % randMax);
+        A[i] = 2.0f * rand() / RAND_MAX - 1.0f;
     }
+    
+    // Initialize B with random values between -1 and 1
     for (int i = 0; i < K * N; i++) {
-        B[i] = static_cast<float>(rand() % randMax);
+        B[i] = 2.0f * rand() / RAND_MAX - 1.0f;
     }
 
     // Allocate memory on the device
@@ -135,9 +168,9 @@ int main() {
     cudaMemcpy(d_B, B, sizeB, cudaMemcpyHostToDevice);
 
     // Configure grid and block dimensions
-    dim3 blockDim(BLOCK_SIZE * BLOCK_SIZE);
-    dim3 gridDim(CEIL_DIV(M, BLOCK_SIZE), CEIL_DIV(N, BLOCK_SIZE));
-    size_t sharedMemSize = 2 * BLOCK_SIZE * BLOCK_SIZE * sizeof(float); // Shared memory size for A and B
+    dim3 blockDim(BM * BN / (TM * TN));
+    dim3 gridDim(CEIL_DIV(M, BM), CEIL_DIV(N, BN));
+    size_t sharedMemSize = (BM * BK + BN * BK) * sizeof(float); // Shared memory size for A and B
 
     // Launch the kernel
     cudaEvent_t start, stop;
