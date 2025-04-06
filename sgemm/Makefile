@@ -15,6 +15,11 @@ run:
 	$(MAKE) $(TARGET)
 	./$(TARGET)
 
+test: 
+	rm -f $(TARGET)
+	$(MAKE) $(TARGET) CFLAGS="$(CFLAGS) -DENABLE_CPU_GEMM"
+	./$(TARGET)
+
 profile: $(TARGET)
 	nsys profile --stats=true --force-overwrite true --output $(TARGET) ./$(TARGET)
 
@@ -23,4 +28,4 @@ profile: $(TARGET)
 clean:
 	rm -rf build
 
-.PHONY: all run clean profile
+.PHONY: all run clean profile test
