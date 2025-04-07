@@ -41,13 +41,15 @@ __global__ void sgemm_kernel(
     const int N,
     const int K
 ) {
+    
+
     // Calculate the row and column index of the element to be computed
     uint tx = threadIdx.x;
     uint bx = blockIdx.x;
     uint by = blockIdx.y;
 
     // Put warp in BlockTile
-    uint warpIdx = tx / V8_NUM_WARPS;
+    uint warpIdx = tx / 32;
     uint warpRow = warpIdx / (V8_BN / V8_WN);
     uint warpCol = warpIdx % (V8_BN / V8_WN);
 
@@ -57,7 +59,7 @@ __global__ void sgemm_kernel(
     constexpr uint WSUBN = V8_WN / V8_WNITER;
 
     // Put thread in warp subtile
-    const uint threadIdxInWarp = tx % V8_NUM_WARPS;
+    const uint threadIdxInWarp = tx % 32;
     const uint threadColInWarp = threadIdxInWarp % (WSUBN / V8_TN);
     const uint threadRowInWarp = threadIdxInWarp / (WSUBN / V8_TN);
 
@@ -69,18 +71,9 @@ __global__ void sgemm_kernel(
     constexpr uint strideA = (4 * V8_NUM_THREADS) / V8_BK;
     constexpr uint strideB = (4 * V8_NUM_THREADS) / V8_BN;
 
-    // Calculate start positions for each block
-    const uint startRowA = V8_BM * bx;
-    const uint startColB = V8_BN * by;
-    
-    // Check block bounds
-    if (startRowA >= M || startColB >= N) {
-        return; // This block is completely out of bounds
-    }
-
-    float* A_ptr = (float*)A + startRowA * K;
-    float* B_ptr = (float*)B + startColB;
-    float* C_ptr = (float*)C + (startRowA + V8_WM * warpRow) * N + startColB + V8_WN * warpCol;
+    float* A_ptr = (float*)A + V8_BM * bx * K;
+    float* B_ptr = (float*)B + V8_BN * by;
+    float* C_ptr = (float*)C + (V8_BM * bx + V8_WM * warpRow) * N + V8_BN * by + V8_WN * warpCol;
 
     // read a block of A and B to shared memory
     extern __shared__ float shared_mem[];
@@ -92,54 +85,34 @@ __global__ void sgemm_kernel(
     float B_reg[V8_TN * V8_WNITER] = {0.0f};
 
     for(int bkIdx = 0; bkIdx < K; bkIdx += V8_BK) {
-        const int remainingK = K - bkIdx;
-        const int currentBK = min(V8_BK, remainingK);
 
         // Load A and B into shared memory
         // Load A into shared memory using strideA
         for (int i = 0; i < V8_BM; i += strideA) {
-            if (innerRowA + i < V8_BM) {
-                const int globalRowA = startRowA + innerRowA + i;
-                const int globalColA = bkIdx + innerColA * 4;
-                
-                if (globalRowA < M && globalColA + 3 < K) {
-                    float4 tmp = reinterpret_cast<const float4*>(
-                        &A_ptr[(innerRowA + i) * K + innerColA * 4]
-                    )[0];
+            // if (innerRowA + i < V8_BM && innerColA * 4 < V8_BK && 
+            //     bkIdx + innerColA * 4 < K && // Add bound check for K dimension
+            //     V8_BM * bx + innerRowA + i < M) { // Add bound check for M dimension
+                float4 tmp = reinterpret_cast<const float4*>(
+                    &A_ptr[(innerRowA + i) * K + innerColA * 4]
+                )[0];
 
-                    As[(innerColA * 4 + 0) * V8_BM + (innerRowA + i)] = tmp.x;
-                    As[(innerColA * 4 + 1) * V8_BM + (innerRowA + i)] = tmp.y;
-                    As[(innerColA * 4 + 2) * V8_BM + (innerRowA + i)] = tmp.z;
-                    As[(innerColA * 4 + 3) * V8_BM + (innerRowA + i)] = tmp.w;
-                } else if (globalRowA < M) {
-                    // Handle edge cases by loading individual elements
-                    for (int j = 0; j < 4 && globalColA + j < K; j++) {
-                        As[(innerColA * 4 + j) * V8_BM + (innerRowA + i)] = 
-                            A_ptr[(innerRowA + i) * K + innerColA * 4 + j];
-                    }
-                }
-            }
+                As[(innerColA * 4 + 0) * V8_BM + (innerRowA + i)] = tmp.x;
+                As[(innerColA * 4 + 1) * V8_BM + (innerRowA + i)] = tmp.y;
+                As[(innerColA * 4 + 2) * V8_BM + (innerRowA + i)] = tmp.z;
+                As[(innerColA * 4 + 3) * V8_BM + (innerRowA + i)] = tmp.w;
+            // }
         }
 
         // Load B into shared memory using strideB
         for (int i = 0; i < V8_BK; i += strideB) {
-            if (innerRowB + i < currentBK) {
-                const int globalRowB = bkIdx + innerRowB + i;
-                const int globalColB = startColB + innerColB * 4;
-                
-                if (globalRowB < K && globalColB + 3 < N) {
-                    reinterpret_cast<float4*>(&Bs[(innerRowB + i) * V8_BN + innerColB * 4])[0] = 
-                        reinterpret_cast<const float4*>(
-                        &B_ptr[(innerRowB + i) * N + innerColB * 4]
-                        )[0];
-                } else if (globalRowB < K) {
-                    // Handle edge cases by loading individual elements
-                    for (int j = 0; j < 4 && globalColB + j < N; j++) {
-                        Bs[(innerRowB + i) * V8_BN + innerColB * 4 + j] = 
-                            B_ptr[(innerRowB + i) * N + innerColB * 4 + j];
-                    }
-                }
-            }
+            // if (innerRowB + i < V8_BK && innerColB * 4 < V8_BN && 
+            //     bkIdx + innerRowB + i < K && // Add bound check for K dimension
+            //     V8_BN * by + innerColB * 4 < N) { // Add bound check for N dimension
+                reinterpret_cast<float4*>(&Bs[(innerRowB + i) * V8_BN + innerColB * 4])[0] = 
+                    reinterpret_cast<const float4*>(
+                    &B_ptr[(innerRowB + i) * N + innerColB * 4]
+                    )[0];
+            // }
         }
 
         __syncthreads();
@@ -147,33 +120,24 @@ __global__ void sgemm_kernel(
         A_ptr += V8_BK;
         B_ptr += V8_BK * N;
 
-        for(int dotIdx = 0; dotIdx < currentBK; dotIdx++) {
-            // Load shared memory data into registers first
+        for(int dotIdx = 0; dotIdx < V8_BK; dotIdx++) {
+
+            // Load shared memory data into registers first with boundary checks
             for(int mIter = 0; mIter < V8_WMITER; mIter++) {
-                const int warpRowOffset = warpRow * V8_WM;
-                const int mIterOffset = mIter * WSUBM;
-                
-                if (warpRowOffset + mIterOffset < V8_BM) {
-                    for(int i = 0; i < V8_TM; i++) {
-                        if (warpRowOffset + mIterOffset + threadRowInWarp * V8_TM + i < V8_BM) {
-                            A_reg[mIter * V8_TM + i] = 
-                                As[dotIdx * V8_BM + warpRowOffset + mIterOffset + threadRowInWarp * V8_TM + i];
-                        }
-                    }
+                for(int i = 0; i < V8_TM; i++) {
+                    int a_idx = dotIdx * V8_BM + warpRow * V8_WM + mIter * WSUBM + threadRowInWarp * V8_TM + i;
+                    // if (a_idx < V8_BM * V8_BK) { // Ensure index is within shared memory bounds
+                        A_reg[mIter * V8_TM + i] = As[a_idx];
+                    // }
                 }
             }
 
             for(int nIter = 0; nIter < V8_WNITER; nIter++) {
-                const int warpColOffset = warpCol * V8_WN;
-                const int nIterOffset = nIter * WSUBN;
-                
-                if (warpColOffset + nIterOffset < V8_BN) {
-                    for(int i = 0; i < V8_TN; i++) {
-                        if (warpColOffset + nIterOffset + threadColInWarp * V8_TN + i < V8_BN) {
-                            B_reg[nIter * V8_TN + i] = 
-                                Bs[dotIdx * V8_BN + warpColOffset + nIterOffset + threadColInWarp * V8_TN + i];
-                        }
-                    }
+                for(int i = 0; i < V8_TN; i++) {
+                    int b_idx = dotIdx * V8_BN + warpCol * V8_WN + nIter * WSUBN + threadColInWarp * V8_TN + i;
+                    // if (b_idx < V8_BK * V8_BN) { // Ensure index is within shared memory bounds
+                        B_reg[nIter * V8_TN + i] = Bs[b_idx];
+                    // }
                 }
             }
 
@@ -192,46 +156,34 @@ __global__ void sgemm_kernel(
         __syncthreads();
     }
 
-    // Write the result to global memory
+
+    // Write the result to global memory with boundary checks
     for(int mIter = 0; mIter < V8_WMITER; mIter++) {
-        const int globalRowOffset = warpRow * V8_WM + mIter * WSUBM + threadRowInWarp * V8_TM;
-        
-        if (startRowA + globalRowOffset < M) {
-            for(int nIter = 0; nIter < V8_WNITER; nIter++) {
-                const int globalColOffset = warpCol * V8_WN + nIter * WSUBN + threadColInWarp * V8_TN;
-                
-                if (startColB + globalColOffset < N) {
-                    for(int resIdxM = 0; resIdxM < V8_TM; resIdxM++) {
-                        if (startRowA + globalRowOffset + resIdxM < M) {
-                            for(int resIdxN = 0; resIdxN < V8_TN; resIdxN += 4) {
-                                const int globalCol = startColB + globalColOffset + resIdxN;
-                                
-                                if (globalCol + 3 < N) {
-                                    // All four elements are within bounds
-                                    reinterpret_cast<float4*>(
-                                        &C_ptr[(mIter * WSUBM + threadRowInWarp * V8_TM + resIdxM) * N + 
-                                            (nIter * WSUBN + threadColInWarp * V8_TN + resIdxN)]
-                                    )[0] = 
-                                        reinterpret_cast<float4*>(
-                                            &threadRes[mIter * V8_WNITER * V8_TN * V8_TM + nIter * V8_TN * V8_TM +
-                                                resIdxM * V8_TN + resIdxN]
-                                        )[0];
-                                } else {
-                                    // Handle edge cases by writing individual elements
-                                    for (int j = 0; j < 4 && globalCol + j < N; j++) {
-                                        C_ptr[(mIter * WSUBM + threadRowInWarp * V8_TM + resIdxM) * N + 
-                                            (nIter * WSUBN + threadColInWarp * V8_TN + resIdxN + j)] = 
-                                            threadRes[mIter * V8_WNITER * V8_TN * V8_TM + nIter * V8_TN * V8_TM +
-                                                resIdxM * V8_TN + resIdxN + j];
-                                    }
-                                }
-                            }
-                        }
+        for(int nIter = 0; nIter < V8_WNITER; nIter++) {
+            for(int resIdxM = 0; resIdxM < V8_TM; resIdxM++) {
+                // Check if we're within the matrix bounds for M dimension
+                // if (V8_BM * bx + V8_WM * warpRow + mIter * WSUBM + threadRowInWarp * V8_TM + resIdxM < M) {
+                    for(int resIdxN = 0; resIdxN < V8_TN; resIdxN += 4) {
+                        // Check if we're within the matrix bounds for N dimension
+                        // if (V8_BN * by + V8_WN * warpCol + nIter * WSUBN + threadColInWarp * V8_TN + resIdxN + 3 < N) {
+                            reinterpret_cast<float4*>(
+                                &C_ptr[(mIter * WSUBM + threadRowInWarp * V8_TM + resIdxM) * N + 
+                                    (nIter * WSUBN + threadColInWarp * V8_TN + resIdxN)]
+                            )[0] = 
+                                reinterpret_cast<float4*>(
+                                    &threadRes[mIter * V8_WNITER * V8_TN * V8_TM + nIter * V8_TN * V8_TM +
+                                        resIdxM * V8_TN + resIdxN]
+                                )[0];
+                        // }
                     }
-                }
+                // } else {
+                //     printf("Thread out of bounds for block.x: %d, block.y: %d, mIter: %d, nIter: %d, resIdxM: %d\n", 
+                //         bx, by, mIter, nIter, resIdxM);
+                // }
             }
         }
     }
+
 }
 
 #ifdef ENABLE_CPU_GEMM
